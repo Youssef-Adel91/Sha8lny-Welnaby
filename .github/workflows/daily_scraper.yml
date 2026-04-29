@@ -1,0 +1,162 @@
+# =============================================================================
+#  Freelance Market Monitor — Daily Scraper Pipeline
+#  File   : .github/workflows/daily_scraper.yml
+#  Course : CS313x Information Retrieval
+# =============================================================================
+#
+#  WHAT THIS WORKFLOW DOES
+#  ─────────────────────────────────────────────────────────────────────────
+#  1. Triggers every day at 00:00 UTC (cron) OR manually from the Actions tab.
+#  2. Checks out the repo, sets up Python 3.11, installs dependencies.
+#  3. Runs scraper.py — which writes/overwrites freelance_data.json.
+#  4. Commits and pushes the updated JSON back to the repo.
+#     • If nothing changed (scraper ran but data is identical), the step
+#       exits cleanly with a "nothing to commit" message — no error.
+#  5. Uploads freelance_data.json as a downloadable workflow artifact
+#     (kept for 30 days) so the team can grab it without cloning.
+#
+#  REQUIRED REPOSITORY SETTING (one-time setup — see bottom of this file)
+#  ─────────────────────────────────────────────────────────────────────────
+#  Settings → Actions → General → Workflow permissions
+#      ✅  "Read and write permissions"
+# =============================================================================
+
+name: Daily Freelance Data Scraper
+
+# ---------------------------------------------------------------------------
+# Triggers
+# ---------------------------------------------------------------------------
+on:
+  # ── Scheduled: every day at midnight UTC ──────────────────────────────────
+  schedule:
+    - cron: "0 0 * * *"   # min hour dom month dow  →  00:00 UTC daily
+
+  # ── Manual: run on-demand from the Actions tab ────────────────────────────
+  workflow_dispatch:
+    inputs:
+      debug_mode:
+        description: "Enable verbose Python logging (true/false)"
+        required: false
+        default: "false"
+
+# ---------------------------------------------------------------------------
+# Permissions
+# ---------------------------------------------------------------------------
+# Grant the built-in GITHUB_TOKEN write access to the repository contents
+# so the "commit & push" step can push without a Personal Access Token.
+# This is scoped to this workflow only — no repo-wide setting change needed
+# beyond enabling "Read and write permissions" in repo settings (see below).
+permissions:
+  contents: write   # needed to git push the updated JSON file
+
+# ---------------------------------------------------------------------------
+# Jobs
+# ---------------------------------------------------------------------------
+jobs:
+  scrape-and-commit:
+    name: "Scrape → Store → Commit"
+    runs-on: ubuntu-latest
+
+    # Prevent two runs from racing each other if a manual trigger fires
+    # while the scheduled run is already in progress.
+    concurrency:
+      group: scraper-pipeline
+      cancel-in-progress: false   # let the running job finish; queue the new one
+
+    steps:
+
+      # ── 1. Checkout ─────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Fetch full history so git can compute diffs correctly.
+          fetch-depth: 1
+
+      # ── 2. Python setup ─────────────────────────────────────────────────
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          # Cache pip's download cache keyed on requirements.txt.
+          # On a cache hit the install step takes ~5 s instead of ~40 s.
+          cache: "pip"
+          cache-dependency-path: requirements.txt
+
+      # ── 3. Install dependencies ─────────────────────────────────────────
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # ── 4. Run the scraper ───────────────────────────────────────────────
+      # The DEBUG_MODE input is passed as an environment variable so
+      # scraper.py can optionally switch to logging.DEBUG when it's "true".
+      - name: Run scraper
+        env:
+          DEBUG_MODE: ${{ github.event.inputs.debug_mode || 'false' }}
+        run: |
+          python scraper.py
+
+      # ── 5. Commit & push freelance_data.json ────────────────────────────
+      #
+      # Key logic:
+      #   a) `git diff --quiet` checks whether the JSON changed.
+      #   b) If NO change  → echo a message and exit 0 (no failure).
+      #   c) If YES change → stage, commit, push.
+      #
+      # The commit is made by "github-actions[bot]" — a well-known virtual
+      # actor whose name & email are recognised by GitHub's UI.
+      - name: Commit and push updated data
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add freelance_data.json
+
+          # --quiet suppresses output; exit code 0 = no diff, 1 = has diff
+          if git diff --staged --quiet; then
+            echo "ℹ️  No changes detected in freelance_data.json — nothing to commit."
+          else
+            # Embed run metadata in the commit message for traceability
+            TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M UTC")
+            TRIGGER="${{ github.event_name }}"   # "schedule" or "workflow_dispatch"
+
+            git commit -m "chore(data): auto-update freelance_data.json
+
+  Triggered by : ${TRIGGER}
+  Run timestamp: ${TIMESTAMP}
+  Workflow run : ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+            git push
+            echo "✅ freelance_data.json committed and pushed successfully."
+          fi
+
+      # ── 6. Upload artifact ───────────────────────────────────────────────
+      # Makes the JSON downloadable directly from the workflow run summary
+      # page — useful for teammates who don't have git access.
+      - name: Upload freelance_data.json as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: freelance-data-${{ github.run_id }}
+          path: freelance_data.json
+          retention-days: 30   # keep for 30 days, then auto-delete
+
+      # ── 7. Summary ───────────────────────────────────────────────────────
+      # Writes a human-readable summary to the Actions run page.
+      - name: Write job summary
+        if: always()   # run even if a previous step failed
+        run: |
+          echo "## 📊 Freelance Market Monitor — Run Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Trigger** | \`${{ github.event_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Runner OS** | \`${{ runner.os }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Python** | 3.11 |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Run ID** | \`${{ github.run_id }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Timestamp (UTC)** | $(date -u +'%Y-%m-%d %H:%M:%S') |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f freelance_data.json ]; then
+            RECORDS=$(python3 -c "import json; d=json.load(open('freelance_data.json')); print(d['metadata']['total_records'])" 2>/dev/null || echo "unknown")
+            echo "| **Records collected** | **${RECORDS}** |" >> $GITHUB_STEP_SUMMARY
+          fi

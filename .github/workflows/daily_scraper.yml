@@ -50,21 +50,17 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
+          
           git add freelance_data.json
-
+          
           if git diff --staged --quiet; then
             echo "ℹ️ No changes detected in freelance_data.json — nothing to commit."
           else
             TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M UTC")
             TRIGGER="${{ github.event_name }}"
-
-            git commit -m "chore(data): auto-update freelance_data.json
             
-            Triggered by : ${TRIGGER}
-            Run timestamp: ${TIMESTAMP}
-            Workflow run : ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-
+            git commit -m "chore(data): auto-update freelance_data.json" -m "Triggered by : ${TRIGGER}" -m "Run timestamp: ${TIMESTAMP}" -m "Workflow run : ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            
             git push
             echo "✅ freelance_data.json committed and pushed successfully."
           fi
